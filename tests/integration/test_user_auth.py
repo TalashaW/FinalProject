@@ -319,8 +319,6 @@ def test_verify_token_numeric_sub():
     result = User.verify_token(token)
     assert result is None
 
-# Add these tests to test_user_auth.py
-
 def test_authenticate_nonexistent_user(db_session):
     """
     Test authentication with a username that doesn't exist (line 221).

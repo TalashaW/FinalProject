@@ -29,7 +29,10 @@ from fastapi.templating import Jinja2Templates  # For HTML templates
 
 from sqlalchemy.orm import Session  # SQLAlchemy database session
 
+
 import uvicorn  # ASGI server for running FastAPI apps
+
+from app.schemas.user import UserUpdate, PasswordUpdate
 
 # Application imports
 from app.auth.dependencies import get_current_active_user  # Authentication dependency
@@ -400,3 +403,180 @@ def delete_calculation(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="127.0.0.1", port=8001, log_level="info")
+
+@app.get("/profile", response_class=HTMLResponse, tags=["web"])
+def profile_page(request: Request):
+    """
+    User profile page for viewing and editing profile information.
+    
+    Allows users to:
+    - View their profile information
+    - Update username, email, first name, last name
+    - Change their password
+    """
+    return templates.TemplateResponse("user_profile.html", {"request": request})
+
+
+@app.get("/api/profile", response_model=UserResponse, tags=["profile"])
+def get_user_profile(
+    current_user = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the current user's profile information.
+    
+    Returns:
+        UserResponse: User profile data including id, username, email, etc.
+    """
+    # Fetch the full user from database
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    return user
+
+
+@app.put("/api/profile", response_model=UserResponse, tags=["profile"])
+def update_user_profile(
+    profile_update: UserUpdate,
+    current_user = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the current user's profile information.
+    
+    Allows updating: username, email, first_name, last_name
+    Cannot update: password (use separate password change endpoint)
+    
+    Args:
+        profile_update: UserUpdate schema with fields to update
+        
+    Returns:
+        UserResponse: Updated user profile data
+        
+    Raises:
+        HTTPException: If username/email already exists (409)
+        HTTPException: If user not found (404)
+    """
+    # Fetch user from database
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Check for duplicate username/email if they're being changed
+    update_data = profile_update.model_dump(exclude_unset=True)
+    
+    if "username" in update_data and update_data["username"] != user.username:
+        existing_user = db.query(User).filter(
+            User.username == update_data["username"],
+            User.id != user.id
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username already taken"
+            )
+    
+    if "email" in update_data and update_data["email"] != user.email:
+        existing_user = db.query(User).filter(
+            User.email == update_data["email"],
+            User.id != user.id
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already in use"
+            )
+    
+    # Update user fields
+    for field, value in update_data.items():
+        if value is not None:  # Only update provided fields
+            setattr(user, field, value)
+    
+    # Update the updated_at timestamp
+    from app.models.user import utcnow
+    user.updated_at = utcnow()
+    
+    try:
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to update profile: {str(e)}"
+        )
+
+
+@app.post("/api/profile/change-password", status_code=status.HTTP_200_OK, tags=["profile"])
+def change_password(
+    password_update: PasswordUpdate,
+    current_user = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Change the current user's password.
+    
+    Requires:
+    - Current password (for verification)
+    - New password (must meet strength requirements)
+    - Confirm new password (must match new password)
+    
+    Args:
+        password_update: PasswordUpdate schema with current and new passwords
+        
+    Returns:
+        dict: Success message
+        
+    Raises:
+        HTTPException: If current password is incorrect (401)
+        HTTPException: If new passwords don't match (400)
+        HTTPException: If user not found (404)
+    """
+    # Fetch user from database
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Verify current password
+    if not user.verify_password(password_update.current_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect"
+        )
+    
+    # Ensure new password is different from current
+    if password_update.current_password == password_update.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password"
+        )
+    
+    # Hash and update password
+    user.password = User.hash_password(password_update.new_password)
+    
+    # Update timestamp
+    from app.models.user import utcnow
+    user.updated_at = utcnow()
+    
+    try:
+        db.commit()
+        return {
+            "message": "Password changed successfully",
+            "success": True
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to change password: {str(e)}"
+        )
