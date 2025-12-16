@@ -99,8 +99,8 @@ jobs:
         with:
           push: true
           tags: |
-            twin632/Final_Project:latest
-            twin632/Final_Project:${{ github.sha }}
+            twin632/final_project:latest
+            twin632/final_project:${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=registry,ref=twin632/Final_Project:cache
           cache-to: type=inline,mode=max
